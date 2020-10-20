@@ -1,0 +1,16 @@
+{
+  "object": {
+    "pins": [
+      {
+        "package": "LetMeIn",
+        "repositoryURL": "https://github.com/julianschiavo/LetMeIn.git",
+        "state": {
+          "branch": null,
+          "revision": "dfb13036da8d22b6747f54f16b97a40b0875622d",
+          "version": "1.0.0"
+        }
+      }
+    ]
+  },
+  "version": 1
+}
