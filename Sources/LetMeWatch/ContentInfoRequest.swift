@@ -9,7 +9,7 @@ import AVFoundation
 import LetMeIn
 
 /// A concrete subclass of `Request` representing a content information request
-class ContentInfoRequest: NSObject, Request, HasLogger, URLSessionDataDelegate {
+class ContentInfoRequest: NSObject, Request, HasLogger, URLSessionDelegate, URLSessionTaskDelegate {
     
     /// The URL of the resource to load
     let resourceURL: URL
@@ -26,14 +26,11 @@ class ContentInfoRequest: NSObject, Request, HasLogger, URLSessionDataDelegate {
     /// A completion handler called when the request completes
     var completionHandler: ((Error?) -> Void)?
     
-    /// The response to the request
-    private var response: HTTPURLResponse?
-    
     /// Whether the request has been cancelled
     private var isCancelled = false
     
-    /// The data task for the request
-    private var task: URLSessionDataTask?
+    /// The task for the request
+    private var task: URLSessionDownloadTask?
     
     /// The URL session used for requests
     private var session: URLSession!
@@ -61,7 +58,13 @@ class ContentInfoRequest: NSObject, Request, HasLogger, URLSessionDataDelegate {
     func start() {
         logger.info("Starting (Resource: \(self.resourceURL.lastPathComponent))")
         let request = createURLRequest()
-        task = session.dataTask(with: request)
+        task = session.downloadTask(with: request) { _, response, error in
+            let result = Result<URLResponse, Error>(success: response, failure: error)
+            self.queue.async { [weak self] in
+                guard let self = self else { return }
+                self.requestDidFinish(result: result)
+            }
+        }
         task?.resume()
     }
     
@@ -93,49 +96,24 @@ class ContentInfoRequest: NSObject, Request, HasLogger, URLSessionDataDelegate {
         return request
     }
     
-    // MARK: - URLSessionDataDelegate
-    
-    public func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
-        logger.info("Received Response (Resource: \(self.resourceURL.lastPathComponent))")
-        
-        guard !isCancelled,
-              let response = response as? HTTPURLResponse
-        else {
-            completionHandler(.cancel)
-            return
-        }
-        
-        guard response.statusCode >= 200,
-              response.statusCode <= 299
-        else {
-            logger.error("Invalid status code, task cancelled (Resource: \(self.resourceURL.lastPathComponent))")
-            completionHandler(.cancel)
-            return
-        }
-        
-        self.response = response
-        completionHandler(.allow)
-    }
-    
-    public func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        guard !isCancelled else { return }
-        
-        if let error = error {
-            logger.error("Failed with error: \(error.localizedDescription) (Resource: \(self.resourceURL.lastPathComponent))")
-        } else {
+    /// Completes the request, updating the necessary objects and calling handlers
+    /// - Parameter result: The result of the request
+    private func requestDidFinish(result: Result<URLResponse, Error>) {
+        switch result {
+        case let .success(response):
             logger.info("Completed (Resource: \(self.resourceURL.lastPathComponent))")
+            contentInfoRequest.update(with: response)
+            avRequest.finishLoading()
+            completionHandler?(nil)
+        case let .failure(error):
+            logger.error("Failed with error: \(error.localizedDescription) (Resource: \(self.resourceURL.lastPathComponent))")
+            avRequest.finishLoading(with: error)
+            completionHandler?(error)
         }
-        
-        queue.async { [weak self] in
-            guard let self = self, !self.isCancelled else { return }
-            if let response = self.response {
-                self.contentInfoRequest.update(with: response)
-            }
-            self.avRequest.finishLoading(with: error)
-            self.completionHandler?(error)
-            self.session.invalidateAndCancel()
-        }
+        session.invalidateAndCancel()
     }
+    
+    // MARK: - URLSessionDownloadDelegate
     
     public func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge, completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
         logger.info("Received Auth Challenge (Resource: \(self.resourceURL.lastPathComponent))")
